@@ -16,6 +16,7 @@
 #include <string>
 #include <vector>
 #include <functional>
+#include <cstdint>
 
 namespace binapi {
 namespace rest {

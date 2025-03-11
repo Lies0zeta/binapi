@@ -1,9 +1,11 @@
-cmake_minimum_required(VERSION 3.5)
-project(binapi)
+cmake_minimum_required(VERSION 3.10)
+project(BinCapture)
 
 set(CMAKE_CXX_STANDARD 17)
 
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -fsanitize=address")
+set(Boost_USE_STATIC_LIBS ON)  # Use static libraries
+
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra")
 
 add_definitions(
     -UNDEBUG
@@ -11,7 +13,7 @@ add_definitions(
 )
 
 include_directories(
-    ./include
+    ../include
 )
 
 if (DEFINED ${BOOST_INCLUDE_DIR})
@@ -37,14 +39,14 @@ set(BINAPI_HEADERS
 )
 
 set(BINAPI_SOURCES
-    src/api.cpp
-    src/enums.cpp
-    src/errors.cpp
-    src/pairslist.cpp
-    src/reports.cpp
-    src/tools.cpp
-    src/types.cpp
-    src/websocket.cpp
+    ../src/api.cpp
+    ../src/enums.cpp
+    ../src/errors.cpp
+    ../src/pairslist.cpp
+    ../src/reports.cpp
+    ../src/tools.cpp
+    ../src/types.cpp
+    ../src/websocket.cpp
 )
 
 add_executable(
@@ -69,3 +71,14 @@ target_link_libraries(
     ssl
     pthread
 )
+
+# Set CPack generator to DEB (Debian package)
+set(CPACK_GENERATOR "DEB")
+set(CPACK_PACKAGE_CONTACT "dswawbdo@gmail.com")
+set(CPACK_INCLUDE_TOPLEVEL_DIRECTORY OFF)
+set(CPACK_PACKAGE_VERSION "0.1.1")
+# Include additional libraries and headers
+install(TARGETS ${PROJECT_NAME} DESTINATION bin)
+
+# Include the CPack module to enable packaging
+include(CPack)

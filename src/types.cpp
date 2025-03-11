@@ -16,7 +16,6 @@
 #include <type_traits>
 
 #include <boost/utility/string_view.hpp>
-
 //#include <iostream> // TODO: comment out
 
 namespace binapi {
