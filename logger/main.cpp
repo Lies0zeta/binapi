@@ -12,11 +12,11 @@
 
 // Template Consumer function
 template <typename T>
-void logger(boost::lockfree::queue<T*>& queue, size_t batch_size, const std::string& filename, std::atomic<bool>& done)
+void logger(boost::lockfree::queue<T*>& queue, const std::string& filename, std::atomic<bool>& done)
 {
     T* value;
-    std::vector<T*> batch;                                          // Container to store the batch
     std::ofstream out_file(filename, std::ios::out | std::ios::app); // Open file in append mode
+    std::ostringstream buffer;
 
     if (out_file.fail())
     {
@@ -29,31 +29,22 @@ void logger(boost::lockfree::queue<T*>& queue, size_t batch_size, const std::str
     {
         while (queue.pop(value))
         {
-            batch.push_back(value);
-            if (batch.size() >= batch_size)
+            buffer << *value << '\n';
+            delete value;
+            if (buffer.str().size() >= 65536)
             {
-                // Write the batch to the file
-                for (const T* item : batch)
-                {
-                    out_file << *item << std::endl;
-                    delete item;
-                }
-                batch.clear(); // Clear the batch after writing
-                // std::cout << "Batch written to file." << std::endl;
+                out_file << buffer.str();
+                buffer.str("");
+                buffer.clear();
             }
         }
         std::this_thread::yield(); // Yield to avoid busy-waiting
     }
 
     // Write any remaining items in the batch to the file
-    if (!batch.empty())
+    if (!buffer.str().empty())
     {
-        for (const T* item : batch)
-        {
-            out_file << *item << std::endl;
-            delete item;
-        }
-        // std::cout << "Remaining batch written to file." << std::endl;
+        out_file << buffer.str();
     }
 
     out_file.close(); // Close the file
@@ -117,22 +108,21 @@ int main(int argc, char* argv[])
     boost::asio::io_context ioctx;
     binapi::ws::websockets ws{ ioctx, "stream.binance.com", "9443" };
 
-    size_t batch_size = 100;
     const std::string agg_trade_fn = folder + "/" + symbol + "_agg_trades";
     boost::lockfree::queue<binapi::ws::agg_trade_t*> agg_trade_queue(1024);
-    std::thread agg_trade_logger_thread(logger<binapi::ws::agg_trade_t>, std::ref(agg_trade_queue), batch_size, std::cref(agg_trade_fn), std::ref(done));
+    std::thread agg_trade_logger_thread(logger<binapi::ws::agg_trade_t>, std::ref(agg_trade_queue), std::cref(agg_trade_fn), std::ref(done));
 
     const std::string klines_fn = folder + "/" + symbol + "_klines";
     boost::lockfree::queue<binapi::ws::kline_t*> klines_queue(1024);
-    std::thread klines_logger_thread(logger<binapi::ws::kline_t>, std::ref(klines_queue), batch_size, std::cref(klines_fn), std::ref(done));
+    std::thread klines_logger_thread(logger<binapi::ws::kline_t>, std::ref(klines_queue), std::cref(klines_fn), std::ref(done));
 
     const std::string bticker_fn = folder + "/" + symbol + "_book_ticker";
     boost::lockfree::queue<binapi::ws::book_ticker_t*> bticker_queue(1024);
-    std::thread bticker_logger_thread(logger<binapi::ws::book_ticker_t>, std::ref(bticker_queue), batch_size, std::cref(bticker_fn), std::ref(done));
+    std::thread bticker_logger_thread(logger<binapi::ws::book_ticker_t>, std::ref(bticker_queue), std::cref(bticker_fn), std::ref(done));
 
     const std::string pdepths_fn = folder + "/" + symbol + "_part_depths";
     boost::lockfree::queue<binapi::ws::part_depths_t*> pdepths_queue(1024);
-    std::thread pdepths_logger_thread(logger<binapi::ws::part_depths_t>, std::ref(pdepths_queue), batch_size, std::cref(pdepths_fn), std::ref(done));
+    std::thread pdepths_logger_thread(logger<binapi::ws::part_depths_t>, std::ref(pdepths_queue), std::cref(pdepths_fn), std::ref(done));
 
     ws.klines(symbol.c_str(), "1s",
         [&klines_queue, &klines_logger_thread](const char* fl, int ec, std::string emsg, auto klines) {
