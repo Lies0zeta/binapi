@@ -28,7 +28,7 @@ int main(int argc, char **argv) {
         ,"443"
         ,std::move(pk)
         ,std::move(sk)
-        ,10000 // recvWindow
+        ,30 // recvWindow
     };
 
     auto res = api.account_info();
