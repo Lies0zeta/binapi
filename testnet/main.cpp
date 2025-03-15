@@ -11,6 +11,8 @@
 #include <typeinfo>
 #include <cxxabi.h>
 
+boost::asio::io_context ioctx;
+
 std::string demangle(const char *name)
 {
     int status = 0;
@@ -20,7 +22,6 @@ std::string demangle(const char *name)
     return result;
 }
 
-boost::asio::io_context ioctx;
 
 void handle_sig(int sig)
 {
@@ -78,13 +79,31 @@ int main(int argc, char *argv[])
     std::cout << " EUR balance: " << account_info.get_balance("EUR") << std::endl;
     std::cout << " EURI balance: " << account_info.get_balance("EURI") << std::endl;
 
-    auto start_uds = api.start_user_data_stream();
-    assert(start_uds);
-    std::cout << "start_uds=" << start_uds.v << std::endl
-              << std::endl;
+    // auto ores = api.open_orders(symbol);
+    // if (!ores)
+    // {
+    //     std::cerr << "account_info error: " << ores.errmsg << std::endl;
+    //     return EXIT_FAILURE;
+    // }
+    // binapi::rest::orders_info_t open_s = std::move(ores.v);
+    // std::cout << "open orders: " << open_s << std::endl;
 
+    // for (const auto& entry : open_s.orders["EUREURI"]) {
+    //     std::cout << "open orderId: " << entry.orderId << std::endl;
+    //     api.cancel_order(symbol, entry.orderId, "", "");
+    // }
+
+    // auto order_res = api.new_order(symbol, binapi::e_side::buy, binapi::e_type::limit,
+    //                                     binapi::e_time::GTC, binapi::e_trade_resp_type::RESULT, "10", "0.9", "", "", "");
+    // if (!order_res)
+    // {
+    //     std::cerr << "account_info error: " << order_res.errmsg << std::endl;
+    //     return EXIT_FAILURE;
+    // }
+    // std::cout << "order: " << order_res.v << std::endl;
+    binapi::double_type bid = 0, ask = 0;
     ws.book(symbol.c_str(),
-            [&api, &symbol](const char *fl, int ec, std::string emsg, auto book)
+            [&api, &symbol, &bid, &ask](const char *fl, int ec, std::string emsg, auto book)
             {
                 if (ec)
                 {
@@ -93,38 +112,20 @@ int main(int argc, char *argv[])
                 }
                 // std::cout << "book type: " << demangle(typeid(book).name()) << std::endl;
                 binapi::ws::book_ticker_t book_ticker = std::move(book);
+                if (bid != book_ticker.b || ask != book_ticker.a)
+                {
+                    api.cancel_all_open_orders(symbol.c_str());
+                    bid = std::move(book_ticker.b);
+                    ask = std::move(book_ticker.a);
+                    api.new_order(symbol, binapi::e_side::buy, binapi::e_type::limit,
+                                  binapi::e_time::GTC, binapi::e_trade_resp_type::RESULT, "100", bid.str(), "", "", "");
+                    api.new_order(symbol, binapi::e_side::sell, binapi::e_type::limit,
+                                  binapi::e_time::GTC, binapi::e_trade_resp_type::RESULT, "100", ask.str(), "", "", "");
+                    std::cout << "new orders" << std::endl;
+                }
                 std::cout << "book: " << book << std::endl;
-                auto order_res = api.new_order(symbol, binapi::e_side::buy, binapi::e_type::limit, 
-                                            binapi::e_time::GTC, binapi::e_trade_resp_type::ACK, book.b);
-
                 return true;
             });
-
-    ws.userdata(start_uds.v.listenKey.c_str(), [](const char *fl, int ec, std::string errmsg, binapi::userdata::account_update_t msg) -> bool
-                {
-            if ( ec ) {
-                std::cout << "account update: fl=" << fl << ", ec=" << ec << ", errmsg: " << errmsg << ", msg: " << msg << std::endl;
-                return false;
-            }
-
-            std::cout << "account update:\n" << msg << std::endl;
-            return true; }, [](const char *fl, int ec, std::string errmsg, binapi::userdata::balance_update_t msg) -> bool
-                {
-            if ( ec ) {
-                std::cout << "balance update: fl=" << fl << ", ec=" << ec << ", errmsg: " << errmsg << ", msg: " << msg << std::endl;
-                return false;
-            }
-
-            std::cout << "balance update:\n" << msg << std::endl;
-            return true; }, [](const char *fl, int ec, std::string errmsg, binapi::userdata::order_update_t msg) -> bool
-                {
-            if ( ec ) {
-                std::cout << "order update: fl=" << fl << ", ec=" << ec << ", errmsg: " << errmsg << ", msg: " << msg << std::endl;
-                return false;
-            }
-
-            std::cout << "order update:\n" << msg << std::endl;
-            return true; });
 
     ioctx.run();
 
