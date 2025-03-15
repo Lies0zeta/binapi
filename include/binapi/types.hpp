@@ -16,7 +16,7 @@
 #include "enums.hpp"
 
 #include <boost/variant.hpp>
-
+#include <shared_mutex>
 #include <string>
 #include <vector>
 #include <map>
@@ -980,6 +980,65 @@ struct userdata_stream_t {
 /*************************************************************************************************/
 /*************************************************************************************************/
 
+struct order_book {
+    std::unordered_map<double_type, double_type> asks;
+    std::unordered_map<double_type, double_type> bids;
+    std::atomic<std::size_t> lastUpdateId;
+    std::atomic<std::size_t> eventTime;
+    mutable std::shared_mutex mtx;
+
+    // Function to update an order book entry
+    void update_order(std::unordered_map<double_type, double_type>& side, 
+                      double_type price, double_type amount) {
+        std::unique_lock<std::shared_mutex> lock(mtx);
+        if (amount == 0) {
+            side.erase(price);  // Remove price level if amount is zero
+        } else {
+            side[price] = amount;  // Update or insert price level
+        }
+    }
+
+    // Update both asks and bids
+    void update(double_type price, double_type amount, bool is_bid) {
+        if (is_bid) {
+            update_order(bids, price, amount);
+        } else {
+            update_order(asks, price, amount);
+        }
+    }
+
+    // Construct order_book from depths_t
+    static std::shared_ptr<order_book> construct(const binapi::rest::depths_t& depths) {
+        auto ob = std::make_unique<order_book>();
+        ob->lastUpdateId = depths.lastUpdateId;
+        std::unique_lock<std::shared_mutex> lock(ob->mtx);
+        for (const auto& bid : depths.bids) {
+            ob->bids[bid.price] = bid.amount;
+        }
+        for (const auto& ask : depths.asks) {
+            ob->asks[ask.price] = ask.amount;
+        }
+        return ob;
+    }
+
+    // Print the order book
+    void print() const {
+        std::cout << "lastEventTime: " << eventTime << std::endl;
+        std::cout << "lastUpdateId: " << lastUpdateId << std::endl;
+        std::cout << "Bids:\n";
+        std::unique_lock<std::shared_mutex> lock(mtx);
+        for (const auto& [price, amount] : bids) {
+            std::cout << "  " << price << " -> " << amount << std::endl;
+        }
+
+        std::cout << "Asks:\n";
+        for (const auto& [price, amount] : asks) {
+            std::cout << "  " << price << " -> " << amount << std::endl;
+        }
+    }
+};
+
 } // ns binapi
+
 
 #endif // __binapi__types_hpp
