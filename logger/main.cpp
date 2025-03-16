@@ -10,11 +10,94 @@
 #include <typeinfo>
 #include <cxxabi.h>
 
+std::atomic<bool> done(false);
+
+int logger_order_book(boost::lockfree::queue<binapi::ws::diff_depths_t *> &ddepths_queue,
+                      const std::string &order_book_fn, binapi::rest::api &api,
+                      const std::string &symbol)
+{
+    std::ofstream order_book_file(order_book_fn, std::ios::out | std::ios::app);
+    binapi::ws::diff_depths_t *diff_depths;
+    std::ostringstream order_book_buffer;
+    binapi::order_book book;
+    std::size_t U;
+
+    if (order_book_file.fail())
+    {
+        std::cerr << "Error opening file!" << std::endl;
+        done = true;
+        return EXIT_FAILURE;
+    }
+    while (!ddepths_queue.pop(diff_depths))
+        std::this_thread::yield();
+    U = diff_depths->U;
+    while (!done && book.lastUpdateId < U)
+    {
+        auto res = api.depths(symbol, 5000);
+        if (!res)
+        {
+            std::cerr << "exchange_info error " << res.errmsg << std::endl;
+            return EXIT_FAILURE;
+        }
+        // Reset the book using the latest snapshot
+        binapi::rest::depths_t orders = std::move(res.v);
+        book = binapi::order_book::construct(orders);
+    }
+    book.eventTime = diff_depths->E;
+    order_book_buffer << book << std::endl;
+    while (!done)
+    {
+        while (ddepths_queue.pop(diff_depths))
+        {
+            if (book.lastUpdateId >= diff_depths->u)
+            {
+                delete diff_depths;
+                continue;
+            }
+            if (book.lastUpdateId >= U && book.lastUpdateId <= diff_depths->u)
+            {
+                for (const auto &bid : diff_depths->b)
+                {
+                    book.update(bid.price, bid.amount, true);
+                }
+                for (const auto &ask : diff_depths->a)
+                {
+                    book.update(ask.price, ask.amount, false);
+                }
+                book.lastUpdateId = diff_depths->u;
+                book.eventTime = diff_depths->E;
+                delete diff_depths;
+                order_book_buffer << book << std::endl;
+                if (order_book_buffer.str().size() >= 65536)
+                {
+                    order_book_file << order_book_buffer.str();
+                    order_book_buffer.str("");
+                    order_book_buffer.clear();
+                }
+            }
+            else
+            {
+                std::cerr << "order_book error " << std::endl;
+                delete diff_depths;
+                done = true;
+                if (!order_book_buffer.str().empty())
+                {
+                    order_book_file << order_book_buffer.str();
+                }
+                order_book_file.close();
+                return EXIT_FAILURE;
+            }
+        }
+        std::this_thread::yield();
+    }
+    order_book_file.close();
+    return EXIT_SUCCESS;
+}
+
 int logger_all(boost::lockfree::queue<binapi::ws::agg_trade_t *> &agg_trade_queue, const std::string &agg_trade_fn,
                boost::lockfree::queue<binapi::ws::kline_t *> &kline_queue, const std::string &klines_fn,
                boost::lockfree::queue<binapi::ws::book_ticker_t *> &bticker_queue, const std::string &bticker_fn,
-               boost::lockfree::queue<binapi::ws::part_depths_t *> &pdepths_queue, const std::string &pdepths_fn,
-               std::atomic<bool> &done, binapi::ws::websockets &ws)
+               binapi::ws::websockets &ws)
 {
     binapi::ws::agg_trade_t *agg_trade;
     std::ofstream agg_trade_file(agg_trade_fn, std::ios::out | std::ios::app);
@@ -28,13 +111,10 @@ int logger_all(boost::lockfree::queue<binapi::ws::agg_trade_t *> &agg_trade_queu
     std::ofstream bticker_file(bticker_fn, std::ios::out | std::ios::app);
     std::ostringstream bticker_buffer;
 
-    binapi::ws::part_depths_t *pdepths;
-    std::ofstream pdepths_file(pdepths_fn, std::ios::out | std::ios::app);
-    std::ostringstream pdepths_buffer;
-
-    if (agg_trade_file.fail() || klines_file.fail() || bticker_file.fail() || pdepths_file.fail())
+    if (agg_trade_file.fail() || klines_file.fail() || bticker_file.fail())
     {
         std::cerr << "Error opening file!" << std::endl;
+        done = true;
         return EXIT_FAILURE;
     }
 
@@ -43,7 +123,7 @@ int logger_all(boost::lockfree::queue<binapi::ws::agg_trade_t *> &agg_trade_queu
     {
         while (agg_trade_queue.pop(agg_trade))
         {
-            agg_trade_buffer << *agg_trade << '\n';
+            agg_trade_buffer << *agg_trade << std::endl;
             delete agg_trade;
             if (agg_trade_buffer.str().size() >= 65536)
             {
@@ -55,7 +135,7 @@ int logger_all(boost::lockfree::queue<binapi::ws::agg_trade_t *> &agg_trade_queu
 
         while (kline_queue.pop(kline))
         {
-            klines_buffer << *kline << '\n';
+            klines_buffer << *kline << std::endl;
             delete kline;
             if (klines_buffer.str().size() >= 65536)
             {
@@ -67,7 +147,7 @@ int logger_all(boost::lockfree::queue<binapi::ws::agg_trade_t *> &agg_trade_queu
 
         while (bticker_queue.pop(bticker))
         {
-            bticker_buffer << *bticker << '\n';
+            bticker_buffer << *bticker << std::endl;
             delete bticker;
             if (bticker_buffer.str().size() >= 65536)
             {
@@ -76,40 +156,23 @@ int logger_all(boost::lockfree::queue<binapi::ws::agg_trade_t *> &agg_trade_queu
                 bticker_buffer.clear();
             }
         }
-
-        while (pdepths_queue.pop(pdepths))
-        {
-            pdepths_buffer << *pdepths << '\n';
-            delete pdepths;
-            if (pdepths_buffer.str().size() >= 65536)
-            {
-                pdepths_file << pdepths_buffer.str();
-                pdepths_buffer.str("");
-                pdepths_buffer.clear();
-            }
-        }
     }
     // CleanUp
     ws.unsubscribe_all();
     while (agg_trade_queue.pop(agg_trade))
     {
-        agg_trade_buffer << *agg_trade << '\n';
+        agg_trade_buffer << *agg_trade << std::endl;
         delete agg_trade;
     }
     while (kline_queue.pop(kline))
     {
-        klines_buffer << *kline << '\n';
+        klines_buffer << *kline << std::endl;
         delete kline;
     }
     while (bticker_queue.pop(bticker))
     {
-        bticker_buffer << *bticker << '\n';
+        bticker_buffer << *bticker << std::endl;
         delete bticker;
-    }
-    while (pdepths_queue.pop(pdepths))
-    {
-        pdepths_buffer << *pdepths << '\n';
-        delete pdepths;
     }
     if (!agg_trade_buffer.str().empty())
     {
@@ -123,15 +186,10 @@ int logger_all(boost::lockfree::queue<binapi::ws::agg_trade_t *> &agg_trade_queu
     {
         bticker_file << bticker_buffer.str();
     }
-    if (!pdepths_buffer.str().empty())
-    {
-        pdepths_file << pdepths_buffer.str();
-    }
 
     agg_trade_file.close();
     klines_file.close();
     bticker_file.close();
-    pdepths_file.close();
     return EXIT_SUCCESS;
 }
 
@@ -176,14 +234,23 @@ std::string mkdir_today()
     return folderName;
 }
 
-boost::asio::io_context ioctx;
-std::atomic<bool> done(false);
-
 void handle_sig(int sig)
 {
     (void)sig;
-    ioctx.stop();
     done = true;
+}
+
+boost::json::object load_keys()
+{
+    std::ifstream file("../keys.json");
+    if (!file)
+    {
+        std::cerr << "Error: Cannot open file" << std::endl;
+        return EXIT_FAILURE;
+    }
+    std::string jsonStr((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    boost::json::value jv = boost::json::parse(jsonStr);
+    return jv.as_object();
 }
 
 int main(int argc, char *argv[])
@@ -198,10 +265,17 @@ int main(int argc, char *argv[])
     {
         symbol = std::string(argv[1]);
     }
-    binapi::ws::websockets ws{ioctx, "stream.binance.com", "9443"};
+    boost::asio::io_context ioctx;
+    binapi::ws::websockets ws{ioctx, "testnet.binance.vision", "443"}; //"stream.binance.com", "9443"
 
     const std::string agg_trade_fn = folder + "/" + symbol + "_agg_trades";
     boost::lockfree::queue<binapi::ws::agg_trade_t *> agg_trade_queue(queue_size);
+    boost::json::object keys = load_keys();
+    binapi::rest::api api{
+        ioctx, "testnet.binance.vision", "443", keys["pk"].as_string().c_str(),
+        keys["sk"].as_string().c_str(),
+        1000 // recvWindow
+    };
 
     const std::string klines_fn = folder + "/" + symbol + "_klines";
     boost::lockfree::queue<binapi::ws::kline_t *> klines_queue(queue_size);
@@ -209,53 +283,57 @@ int main(int argc, char *argv[])
     const std::string bticker_fn = folder + "/" + symbol + "_book_ticker";
     boost::lockfree::queue<binapi::ws::book_ticker_t *> bticker_queue(queue_size);
 
-    const std::string pdepths_fn = folder + "/" + symbol + "_part_depths";
-    boost::lockfree::queue<binapi::ws::part_depths_t *> pdepths_queue(queue_size);
+    const std::string order_book_fn = folder + "/" + symbol + "_order_book";
+    boost::lockfree::queue<binapi::ws::diff_depths_t *> ddepths_queue(queue_size);
 
     std::thread logger_thread(logger_all, std::ref(agg_trade_queue), std::cref(agg_trade_fn),
                               std::ref(klines_queue), std::cref(klines_fn),
                               std::ref(bticker_queue), std::cref(bticker_fn),
-                              std::ref(pdepths_queue), std::cref(pdepths_fn),
-                              std::ref(done), std::ref(ws));
+                              std::ref(ws));
+
+    std::thread order_book_thread(logger_order_book, std::ref(ddepths_queue), std::cref(order_book_fn),
+                                  std::ref(api), std::cref(symbol));
 
     ws.klines(symbol.c_str(), "1s",
-              [&klines_queue, &logger_thread](const char *fl, int ec, std::string emsg, auto klines)
-              {
-                  if (ec || done)
-                  {
-                      if (ec)
-                      {
-                          std::cerr << "subscribe klines error: fl=" << fl << ", ec=" << ec << ", emsg=" << emsg << std::endl;
-                          done = true;
-                      }
-                      logger_thread.join();
-                      return false;
-                  }
-                  binapi::ws::kline_t *value = new binapi::ws::kline_t(klines);
-                  klines_queue.push(value);
-                  return true;
-              });
+            [&klines_queue, &logger_thread, &order_book_thread](const char *fl, int ec, std::string emsg, auto klines)
+            {
+                if (ec || done)
+                {
+                    if (ec)
+                    {
+                        std::cerr << "subscribe klines error: fl=" << fl << ", ec=" << ec << ", emsg=" << emsg << std::endl;
+                        done = true;
+                    }
+                    logger_thread.join();
+                    order_book_thread.join();
+                    return false;
+                }
+                binapi::ws::kline_t *value = new binapi::ws::kline_t(klines);
+                klines_queue.push(value);
+                return true;
+            });
 
     ws.agg_trade(symbol.c_str(),
-                 [&agg_trade_queue, &logger_thread](const char *fl, int ec, std::string emsg, auto trades)
-                 {
-                     if (ec || done)
-                     {
-                         if (ec)
-                         {
-                             std::cerr << "subscribe trades error: fl=" << fl << ", ec=" << ec << ", emsg=" << emsg << std::endl;
-                             done = true;
-                         }
-                         logger_thread.join();
-                         return false;
-                     }
-                     binapi::ws::agg_trade_t *value = new binapi::ws::agg_trade_t(trades);
-                     agg_trade_queue.push(value);
-                     return true;
-                 });
+            [&agg_trade_queue, &logger_thread, &order_book_thread](const char *fl, int ec, std::string emsg, auto trades)
+            {
+                if (ec || done)
+                {
+                    if (ec)
+                    {
+                        std::cerr << "subscribe trades error: fl=" << fl << ", ec=" << ec << ", emsg=" << emsg << std::endl;
+                        done = true;
+                    }
+                    logger_thread.join();
+                    order_book_thread.join();
+                    return false;
+                }
+                binapi::ws::agg_trade_t *value = new binapi::ws::agg_trade_t(trades);
+                agg_trade_queue.push(value);
+                return true;
+            });
 
     ws.book(symbol.c_str(),
-            [&bticker_queue, &logger_thread](const char *fl, int ec, std::string emsg, auto book)
+            [&bticker_queue, &logger_thread, &order_book_thread](const char *fl, int ec, std::string emsg, auto book)
             {
                 if (ec || done)
                 {
@@ -265,75 +343,33 @@ int main(int argc, char *argv[])
                         done = true;
                     }
                     logger_thread.join();
+                    order_book_thread.join();
                     return false;
                 }
-                // std::cout << "book type: " << demangle(typeid(book).name()) << std::endl;
-                // std::cout << "book: " << book << std::endl;
                 binapi::ws::book_ticker_t *value = new binapi::ws::book_ticker_t(book);
                 bticker_queue.push(value);
                 return true;
             });
 
-    ws.part_depth(symbol.c_str(), binapi::e_levels::_20, binapi::e_freq::_100ms,
-                  [&pdepths_queue, &logger_thread](const char *fl, int ec, std::string emsg, auto depths)
-                  {
-                      if (ec || done)
-                      {
-                          if (ec)
-                          {
-                              std::cerr << "subscribe part_depth error: fl=" << fl << ", ec=" << ec << ", emsg=" << emsg << std::endl;
-                              done = true;
-                          }
-                          logger_thread.join();
-                          return false;
-                      }
-                      binapi::ws::part_depths_t *value = new binapi::ws::part_depths_t(depths);
-                      pdepths_queue.push(value);
-                      return true;
-                  });
+    ws.diff_depth(symbol.c_str(), binapi::e_freq::_100ms,
+            [&ddepths_queue, &logger_thread, &order_book_thread](const char *fl, int ec, std::string emsg, auto depths)
+            {
+                if (ec || done)
+                {
+                    if (ec)
+                    {
+                        std::cerr << "subscribe diff_depth error: fl=" << fl << ", ec=" << ec << ", emsg=" << emsg << std::endl;
+                        done = true;
+                    }
+                    logger_thread.join();
+                    order_book_thread.join();
+                    return false;
+                }
+                binapi::ws::diff_depths_t *value = new binapi::ws::diff_depths_t(depths);
+                ddepths_queue.push(value);
+                return true;
+            });
 
     ioctx.run();
     return EXIT_SUCCESS;
 }
-
-// ws.diff_depth("BTCUSDT", binapi::e_freq::_100ms,
-//     [](const char *fl, int ec, std::string emsg, auto depths) {
-//         if ( ec ) {
-//             std::cerr << "subscribe diff_depth error: fl=" << fl << ", ec=" << ec << ", emsg=" << emsg << std::endl;
-
-//             return false;
-//         }
-
-//         std::cout << "diff_depths: " << depths << std::endl;
-
-//         return true;
-//     }
-// );
-
-// ws.trade("BTCUSDT",
-//     [](const char *fl, int ec, std::string emsg, auto trades) {
-//         if ( ec ) {
-//             std::cerr << "subscribe trades error: fl=" << fl << ", ec=" << ec << ", emsg=" << emsg << std::endl;
-
-//             return false;
-//         }
-
-//         std::cout << "trades: " << trades << std::endl;
-
-//         return true;
-//     }
-// );
-
-// ws.mini_tickers(
-//     [](const char *fl, int ec, std::string emsg, auto mini_tickers) {
-//         if ( ec ) {
-//             std::cerr << "subscribe mini_tickers error: fl=" << fl << ", ec=" << ec << ", emsg=" << emsg << std::endl;
-
-//             return false;
-//         }
-
-//         std::cout << "mini_tickers: " << mini_tickers << std::endl;
-
-//         return true;
-//     }
-// );

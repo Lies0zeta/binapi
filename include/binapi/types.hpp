@@ -984,14 +984,12 @@ struct userdata_stream_t {
 struct order_book {
     std::unordered_map<double_type, double_type> asks;
     std::unordered_map<double_type, double_type> bids;
-    std::atomic<std::size_t> lastUpdateId;
-    std::atomic<std::size_t> eventTime;
-    mutable std::shared_mutex mtx;
+    std::size_t lastUpdateId = 0;
+    std::size_t eventTime = 0;
 
     // Function to update an order book entry
     void update_order(std::unordered_map<double_type, double_type>& side, 
                       double_type price, double_type amount) {
-        std::unique_lock<std::shared_mutex> lock(mtx);
         if (amount == 0) {
             side.erase(price);  // Remove price level if amount is zero
         } else {
@@ -1009,33 +1007,16 @@ struct order_book {
     }
 
     // Construct order_book from depths_t
-    static std::shared_ptr<order_book> construct(const binapi::rest::depths_t& depths) {
-        auto ob = std::make_unique<order_book>();
-        ob->lastUpdateId = depths.lastUpdateId;
-        std::unique_lock<std::shared_mutex> lock(ob->mtx);
+    static order_book construct(const binapi::rest::depths_t& depths) {
+        order_book ob;
+        ob.lastUpdateId = depths.lastUpdateId;
         for (const auto& bid : depths.bids) {
-            ob->bids[bid.price] = bid.amount;
+            ob.bids[bid.price] = bid.amount;
         }
         for (const auto& ask : depths.asks) {
-            ob->asks[ask.price] = ask.amount;
+            ob.asks[ask.price] = ask.amount;
         }
         return ob;
-    }
-
-    // Print the order book
-    void print() const {
-        std::cout << "lastEventTime: " << eventTime << std::endl;
-        std::cout << "lastUpdateId: " << lastUpdateId << std::endl;
-        std::cout << "Bids:\n";
-        std::unique_lock<std::shared_mutex> lock(mtx);
-        for (const auto& [price, amount] : bids) {
-            std::cout << "  " << price << " -> " << amount << std::endl;
-        }
-
-        std::cout << "Asks:\n";
-        for (const auto& [price, amount] : asks) {
-            std::cout << "  " << price << " -> " << amount << std::endl;
-        }
     }
 
     friend std::ostream& operator<<(std::ostream& os, const order_book& book) {
@@ -1045,7 +1026,6 @@ struct order_book {
         j["lastUpdateId"] = book.lastUpdateId;
         // Convert unordered_map to JSON array of price-quantity pairs
         boost::json::array asks_array, bids_array;
-        std::unique_lock<std::shared_mutex> lock(book.mtx);
         for (const auto& [price, quantity] : book.asks) {
             asks_array.push_back(boost::json::array{to_string(price), to_string(quantity)});
         }

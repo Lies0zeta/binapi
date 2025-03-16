@@ -70,13 +70,14 @@ target_link_libraries(
     crypto
     ssl
     pthread
+    boost_json
 )
 
 # Set CPack generator to DEB (Debian package)
 set(CPACK_GENERATOR "DEB")
 set(CPACK_PACKAGE_CONTACT "dswawbdo@gmail.com")
 set(CPACK_INCLUDE_TOPLEVEL_DIRECTORY OFF)
-set(CPACK_PACKAGE_VERSION "0.1.1")
+set(CPACK_PACKAGE_VERSION "0.1.2")
 # Include additional libraries and headers
 install(TARGETS ${PROJECT_NAME} DESTINATION bin)
 
