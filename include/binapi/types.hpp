@@ -16,6 +16,7 @@
 #include "enums.hpp"
 
 #include <boost/variant.hpp>
+#include <boost/json.hpp>
 #include <shared_mutex>
 #include <string>
 #include <vector>
@@ -1035,6 +1036,28 @@ struct order_book {
         for (const auto& [price, amount] : asks) {
             std::cout << "  " << price << " -> " << amount << std::endl;
         }
+    }
+
+    friend std::ostream& operator<<(std::ostream& os, const order_book& book) {
+        boost::json::object j;
+        
+        j["lastEventTime"] = book.eventTime;
+        j["lastUpdateId"] = book.lastUpdateId;
+        // Convert unordered_map to JSON array of price-quantity pairs
+        boost::json::array asks_array, bids_array;
+        std::unique_lock<std::shared_mutex> lock(book.mtx);
+        for (const auto& [price, quantity] : book.asks) {
+            asks_array.push_back(boost::json::array{to_string(price), to_string(quantity)});
+        }
+        for (const auto& [price, quantity] : book.bids) {
+            bids_array.push_back(boost::json::array{to_string(price), to_string(quantity)});
+        }
+
+        j["asks"] = std::move(asks_array);
+        j["bids"] = std::move(bids_array);
+
+        os << boost::json::serialize(j);  // Efficient serialization
+        return os;
     }
 };
 

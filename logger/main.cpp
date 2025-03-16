@@ -176,11 +176,13 @@ std::string mkdir_today()
     return folderName;
 }
 
+boost::asio::io_context ioctx;
 std::atomic<bool> done(false);
 
 void handle_sig(int sig)
 {
     (void)sig;
+    ioctx.stop();
     done = true;
 }
 
@@ -196,7 +198,6 @@ int main(int argc, char *argv[])
     {
         symbol = std::string(argv[1]);
     }
-    boost::asio::io_context ioctx;
     binapi::ws::websockets ws{ioctx, "stream.binance.com", "9443"};
 
     const std::string agg_trade_fn = folder + "/" + symbol + "_agg_trades";

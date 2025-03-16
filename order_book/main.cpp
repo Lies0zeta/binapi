@@ -150,7 +150,7 @@ int main(int argc, char *argv[])
                   }
 
                   std::cout << "klines: " << klines << std::endl;
-                  book->print();
+                  std::cout << "order_book: " << *book << std::endl;
                   return true;
               });
 
