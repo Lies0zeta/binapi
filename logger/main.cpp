@@ -66,8 +66,8 @@ int logger_order_book(boost::lockfree::queue<binapi::ws::diff_depths_t *> &ddept
                 }
                 book.lastUpdateId = diff_depths->u;
                 book.eventTime = diff_depths->E;
+                order_book_buffer << *diff_depths << std::endl;
                 delete diff_depths;
-                order_book_buffer << book << std::endl;
                 if (order_book_buffer.str().size() >= 65536)
                 {
                     order_book_file << order_book_buffer.str();
